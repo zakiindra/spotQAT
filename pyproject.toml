@@ -1,0 +1,26 @@
+[project]
+name = "spotqat"
+version = "0.1.0"
+description = "A project leveraging TorchAO for QAT"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "datasets",
+    "torch",
+    "torchao",
+    "transformers",
+    "bitsandbytes",
+]
+
+[tool.uv]
+managed = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

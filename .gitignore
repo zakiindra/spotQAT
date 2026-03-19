@@ -205,3 +205,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+spot_checkpoints/*
+qat_experiment_out/*
+test
