@@ -3,6 +3,7 @@ import csv
 import sys
 import time
 import subprocess
+import argparse
 
 def get_simulated_lifetime(trace_path="data/us-east1a_V100_cdf.csv", threshold=0.8):
     trace_path = os.path.join(os.path.dirname(__file__), trace_path)
@@ -25,10 +26,17 @@ def get_simulated_lifetime(trace_path="data/us-east1a_V100_cdf.csv", threshold=0
         return 3600.0
 
 def main():
+    parser = argparse.ArgumentParser(description="Spot Preemption Simulator")
+    parser.add_argument("--dry-run", action="store_true", help="Print simulated lifetime and exit")
+    args = parser.parse_args()
+
+    print("Initializing Spot Preemption Simulator...")
     lifetime = get_simulated_lifetime()
-    print(f"Starting external QAT orchestrator.")
-    print(f"Simulated spot lifetime threshold: {lifetime:.2f} seconds.")
+    print(f"Simulated spot lifetime: {lifetime:.2f} seconds ({lifetime/3600:.2f} hours)")
     
+    if args.dry_run:
+        return
+        
     script_to_run = os.path.join(os.path.dirname(__file__), "train_and_qat.py")
     
     print(f"Launching {script_to_run} ...")
