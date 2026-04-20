@@ -2,7 +2,7 @@
 set -e
 
 ENV_DIR="./.venv"
-PYTHON_VERSION="3.10"
+PYTHON_VERSION="3.12"
 
 echo "==========================================================="
 echo " Setting up local Conda environment in $ENV_DIR"
