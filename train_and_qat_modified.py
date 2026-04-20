@@ -28,9 +28,8 @@ from torchao.quantization.qat import QATConfig
 from checkpoint_service.checkpoint_client_async import (
     AsyncCheckpointClient,
     download_checkpoint_file,
-    send_checkpoint_file,
-    stage_file_copy,
 )
+from checkpointing import FixedIntervalCheckpointWriter, AsyncCheckpointWriter, KaplanMeierCheckpointWriter
 
 # Configure Envs
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -64,7 +63,8 @@ SAVE_EVERY_N_SECONDS = -1
 #                           and synchronously upload to the checkpoint server
 #   2) "async"          -> save on a fixed step/time interval in a background thread,
 #                           then upload in a second background thread
-CHECKPOINT_MODE = "async"  # options: "fixed_interval", "async"
+#   3) "adaptive"       -> save based on Kaplan-Meier preemption risk analysis
+CHECKPOINT_MODE = "async"  # options: "fixed_interval", "async", "adaptive"
 ASYNC_CHECKPOINT_QUEUE_SIZE = 2
 ASYNC_UPLOAD_QUEUE_SIZE = 2
 
@@ -75,90 +75,7 @@ BASE_CHECKPOINT_DIR = "./spot_checkpoints"
 REMOTE_CHECKPOINT_FILENAME = "latest_spot_checkpoint.pt"
 
 
-class AsyncCheckpointWriter:
-    def __init__(
-        self,
-        checkpoint_path,
-        upload_staging_dir,
-        checkpoint_times,
-        record_timing_fn,
-        upload_client: AsyncCheckpointClient | None,
-    ):
-        self.checkpoint_path = checkpoint_path
-        self.upload_staging_dir = upload_staging_dir
-        self.checkpoint_times = checkpoint_times
-        self.record_timing_fn = record_timing_fn
-        self.upload_client = upload_client
-        self.tasks = queue.Queue(maxsize=ASYNC_CHECKPOINT_QUEUE_SIZE)
-        self.stop_event = threading.Event()
-        self.worker = threading.Thread(target=self._worker_loop, daemon=True)
-        self.worker.start()
 
-    def _atomic_save_checkpoint(self, payload):
-        temp_path = self.checkpoint_path + ".tmp"
-        torch.save(payload, temp_path)
-        os.replace(temp_path, self.checkpoint_path)
-
-    def _worker_loop(self):
-        while not self.stop_event.is_set() or not self.tasks.empty():
-            try:
-                item = self.tasks.get(timeout=0.1)
-            except queue.Empty:
-                continue
-
-            if item is None:
-                self.tasks.task_done()
-                break
-
-            payload, epoch_idx, step_idx, phase = item
-            t0 = time.time()
-            self._atomic_save_checkpoint(payload)
-            dt = time.time() - t0
-            self.checkpoint_times.append(dt)
-            self.record_timing_fn(phase, epoch_idx, step_idx, "checkpoint_async_write", dt)
-
-            if self.upload_client is not None:
-                stage_name = f"upload_{phase}_epoch{epoch_idx}_step{step_idx}.pt"
-                staged_path = stage_file_copy(
-                    self.checkpoint_path,
-                    self.upload_staging_dir,
-                    staged_name=stage_name,
-                )
-                self.upload_client.enqueue_file(
-                    file_path=staged_path,
-                    remote_name=REMOTE_CHECKPOINT_FILENAME,
-                    delete_after=True,
-                )
-                self.record_timing_fn(phase, epoch_idx, step_idx, "checkpoint_async_upload_enqueue", 0.0)
-
-            self.tasks.task_done()
-
-    def enqueue(self, payload, epoch_idx, step_idx, phase):
-        if self.tasks.full():
-            try:
-                dropped = self.tasks.get_nowait()
-                if dropped is not None:
-                    _, drop_epoch, drop_step, drop_phase = dropped
-                    self.record_timing_fn(
-                        drop_phase,
-                        drop_epoch,
-                        drop_step,
-                        "checkpoint_async_drop",
-                        0.0,
-                    )
-                self.tasks.task_done()
-            except queue.Empty:
-                pass
-        self.tasks.put((payload, epoch_idx, step_idx, phase))
-
-    def flush(self):
-        self.tasks.join()
-
-    def close(self):
-        self.flush()
-        self.stop_event.set()
-        self.tasks.put(None)
-        self.worker.join()
 
 
 def _to_cpu_state_dict(state_dict):
@@ -316,16 +233,35 @@ def run_training_pipeline(model_name, run_type):
     checkpoint_path = os.path.join(checkpoint_dir, REMOTE_CHECKPOINT_FILENAME)
 
     upload_client = None
-    async_checkpoint_writer = None
+    checkpoint_writer = None
     if run_type == "spot":
         if CHECKPOINT_MODE == "async":
             upload_client = AsyncCheckpointClient(queue_size=ASYNC_UPLOAD_QUEUE_SIZE)
-            async_checkpoint_writer = AsyncCheckpointWriter(
+            checkpoint_writer = AsyncCheckpointWriter(
                 checkpoint_path=checkpoint_path,
                 upload_staging_dir=upload_staging_dir,
                 checkpoint_times=checkpoint_times,
                 record_timing_fn=record_timing,
                 upload_client=upload_client,
+                queue_size=ASYNC_CHECKPOINT_QUEUE_SIZE,
+                remote_name=REMOTE_CHECKPOINT_FILENAME
+            )
+        elif CHECKPOINT_MODE == "fixed_interval":
+            checkpoint_writer = FixedIntervalCheckpointWriter(
+                checkpoint_path=checkpoint_path,
+                checkpoint_times=checkpoint_times,
+                record_timing_fn=record_timing,
+                remote_name=REMOTE_CHECKPOINT_FILENAME
+            )
+        elif CHECKPOINT_MODE == "adaptive":
+            checkpoint_writer = KaplanMeierCheckpointWriter(
+                checkpoint_path=checkpoint_path,
+                checkpoint_times=checkpoint_times,
+                record_timing_fn=record_timing,
+                remote_name=REMOTE_CHECKPOINT_FILENAME,
+                data_source="aws",
+                risk_threshold=0.05,
+                window_size=600
             )
 
     def build_checkpoint_payload(epoch_idx, step_idx, phase):
@@ -338,10 +274,7 @@ def run_training_pipeline(model_name, run_type):
             "scheduler_state_dict": copy.deepcopy(scheduler.state_dict()),
         }
 
-    def atomic_save_checkpoint(payload):
-        temp_path = checkpoint_path + ".tmp"
-        torch.save(payload, temp_path)
-        os.replace(temp_path, checkpoint_path)
+
 
     def maybe_restore_remote_checkpoint():
         if os.path.exists(checkpoint_path):
@@ -386,32 +319,10 @@ def run_training_pipeline(model_name, run_type):
 
     start_epoch, start_step, current_phase = load_spot_checkpoint_if_present()
 
-    def save_spot_checkpoint_fixed_interval(epoch_idx, step_idx, phase):
-        t0 = time.time()
-        chkpt = build_checkpoint_payload(epoch_idx, step_idx, phase)
-        atomic_save_checkpoint(chkpt)
-        send_checkpoint_file(checkpoint_path, remote_name=REMOTE_CHECKPOINT_FILENAME)
-        dt = time.time() - t0
-        checkpoint_times.append(dt)
-        record_timing(phase, epoch_idx, step_idx, "checkpoint_fixed_interval", dt)
-
-    def save_spot_checkpoint_async(epoch_idx, step_idx, phase):
-        t0 = time.time()
-        chkpt = build_checkpoint_payload(epoch_idx, step_idx, phase)
-        enqueue_dt = time.time() - t0
-        checkpoint_times.append(enqueue_dt)
-        record_timing(phase, epoch_idx, step_idx, "checkpoint_async_enqueue", enqueue_dt)
-        async_checkpoint_writer.enqueue(chkpt, epoch_idx, step_idx, phase)
-
     def save_spot_checkpoint(epoch_idx, step_idx, phase):
-        if CHECKPOINT_MODE == "fixed_interval":
-            save_spot_checkpoint_fixed_interval(epoch_idx, step_idx, phase)
-        elif CHECKPOINT_MODE == "async":
-            save_spot_checkpoint_async(epoch_idx, step_idx, phase)
-        else:
-            raise ValueError(
-                f"Unsupported CHECKPOINT_MODE={CHECKPOINT_MODE}. Use 'fixed_interval' or 'async'."
-            )
+        if checkpoint_writer is not None:
+            chkpt = build_checkpoint_payload(epoch_idx, step_idx, phase)
+            checkpoint_writer.save_checkpoint(chkpt, epoch_idx, step_idx, phase)
 
     def train_one_epoch(
         model, dataloader, optimizer, scheduler, epoch_idx, phase_name, start_step=0
@@ -457,10 +368,16 @@ def run_training_pipeline(model_name, run_type):
                 pbar.set_postfix({"loss": f"{running / (step - start_step):.4f}"})
 
                 if run_type == "spot":
-                    if (SAVE_EVERY_N_STEPS > 0 and step % SAVE_EVERY_N_STEPS == 0) or (
-                        SAVE_EVERY_N_SECONDS > 0
-                        and time.time() - last_save_time >= SAVE_EVERY_N_SECONDS
-                    ):
+                    checkpoint_triggered = False
+                    if hasattr(checkpoint_writer, 'should_save'):
+                        elapsed_since_save = time.time() - last_save_time
+                        total_elapsed = time.time() - global_start_time
+                        checkpoint_triggered = checkpoint_writer.should_save(elapsed_since_save, total_elapsed)
+                    else:
+                        checkpoint_triggered = (SAVE_EVERY_N_STEPS > 0 and step % SAVE_EVERY_N_STEPS == 0) or \
+                                               (SAVE_EVERY_N_SECONDS > 0 and time.time() - last_save_time >= SAVE_EVERY_N_SECONDS)
+
+                    if checkpoint_triggered:
                         save_spot_checkpoint(epoch_idx, step, phase_name)
                         last_save_time = time.time()
 
@@ -532,8 +449,8 @@ def run_training_pipeline(model_name, run_type):
                 f"[qat] epoch={epoch} train_loss={train_loss:.4f} val_loss={val_loss:.4f} val_ppl={val_ppl:.2f} time={total_epoch_time:.2f}s"
             )
 
-    if async_checkpoint_writer is not None:
-        async_checkpoint_writer.flush()
+    if checkpoint_writer is not None:
+        checkpoint_writer.flush()
     if upload_client is not None:
         upload_client.flush()
 
@@ -559,8 +476,8 @@ def run_training_pipeline(model_name, run_type):
     print(f"Saved quantized {model_name} model to: {output_dir}")
     print(f"Finished processing {model_name} ({run_type}) in {total_time:.2f}s!\n")
 
-    if async_checkpoint_writer is not None:
-        async_checkpoint_writer.close()
+    if checkpoint_writer is not None:
+        checkpoint_writer.close()
     if upload_client is not None:
         upload_client.close()
 
