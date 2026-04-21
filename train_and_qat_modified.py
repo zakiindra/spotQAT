@@ -603,6 +603,10 @@ def main():
     NUM_EPOCHS_QAT = args.num_epochs_qat
     MAX_SAMPLE_TIME = args.max_sample_time
     
+    global BASE_OUTPUT_DIR, BASE_CHECKPOINT_DIR
+    BASE_OUTPUT_DIR = f"./qat_experiment_out/{args.sim_id}"
+    BASE_CHECKPOINT_DIR = f"./spot_checkpoints/{args.sim_id}"
+    
     run_type = "baseline" if args.checkpointing == "none" else "spot"
 
     os.makedirs(BASE_OUTPUT_DIR, exist_ok=True)
