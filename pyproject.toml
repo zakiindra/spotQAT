@@ -10,6 +10,8 @@ dependencies = [
     "torchao",
     "transformers",
     "bitsandbytes",
+    "prettytable>=3.17.0",
+    "accelerate>=1.13.0",
 ]
 
 [tool.uv]
