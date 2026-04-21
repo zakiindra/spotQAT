@@ -176,6 +176,10 @@ def run_training_pipeline(model_name, run_type):
     aprint(f"Loading model {model_name}...")
     model = AutoModelForCausalLM.from_pretrained(model_name, dtype=DTYPE)
     model.config.use_cache = False
+    
+    # NOTE: bitsandbytes optimizers require parameters to be on the GPU 
+    # BEFORE the optimizer is initialized.
+    model.to(DEVICE)
 
     # -----------------------------
     # Optimizer / scheduler
