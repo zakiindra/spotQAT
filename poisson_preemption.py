@@ -13,6 +13,7 @@ def sample_poisson_lifetime(mttf_hours=2.0):
 def main():
     parser = argparse.ArgumentParser(description="Poisson Preemption Simulator")
     parser.add_argument("--dry-run", action="store_true", help="Print simulated lifetime and exit")
+    parser.add_argument("--checkpointing-method", type=str, default="fixed", choices=["fixed", "async", "adaptive", "none"], help="Checkpointing method to pass to the training script")
     args = parser.parse_args()
 
     print("Initializing Poisson Preemption Simulator...")
@@ -22,10 +23,10 @@ def main():
     if args.dry_run:
         return
         
-    script_to_run = os.path.join(os.path.dirname(__file__), "train_and_qat.py")
+    script_to_run = os.path.join(os.path.dirname(__file__), "train_and_qat_modified.py")
     
-    print(f"Launching {script_to_run} ...")
-    process = subprocess.Popen([sys.executable, script_to_run])
+    print(f"Launching {script_to_run} with method {args.checkpointing_method}...")
+    process = subprocess.Popen([sys.executable, script_to_run, f"--checkpointing={args.checkpointing_method}"])
     
     start_time = time.time()
     
