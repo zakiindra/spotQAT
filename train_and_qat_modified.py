@@ -174,13 +174,13 @@ def run_training_pipeline(model_name, run_type):
     # Model
     # -----------------------------
     aprint(f"Loading model {model_name}...")
-    model = AutoModelForCausalLM.from_pretrained(model_name, dtype=DTYPE)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, 
+        dtype=DTYPE,
+        device_map={"": accelerator.process_index}
+    )
     model.config.use_cache = False
     
-    # NOTE: bitsandbytes optimizers require parameters to be on the GPU 
-    # BEFORE the optimizer is initialized.
-    model.to(DEVICE)
-
     # -----------------------------
     # Optimizer / scheduler
     # -----------------------------
@@ -255,7 +255,7 @@ def run_training_pipeline(model_name, run_type):
                 queue_size=ASYNC_CHECKPOINT_QUEUE_SIZE,
                 remote_name=REMOTE_CHECKPOINT_FILENAME
             )
-        elif CHECKPOINT_MODE == "fixed_interval":
+        elif CHECKPOINT_MODE == "fixed":
             checkpoint_writer = FixedIntervalCheckpointWriter(
                 checkpoint_path=checkpoint_path,
                 checkpoint_times=checkpoint_times,
@@ -576,7 +576,7 @@ def main():
     parser.add_argument(
         "--checkpointing",
         type=str,
-        choices=["fixed_interval", "async", "adaptive", "none"],
+        choices=["fixed", "async", "adaptive", "none"],
         default="none",
         help="The checkpointing method to use. If 'none', runs the baseline."
     )

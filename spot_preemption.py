@@ -28,6 +28,7 @@ def get_simulated_lifetime(trace_path="data/us-east1a_V100_cdf.csv", threshold=0
 def main():
     parser = argparse.ArgumentParser(description="Spot Preemption Simulator")
     parser.add_argument("--dry-run", action="store_true", help="Print simulated lifetime and exit")
+    parser.add_argument("--checkpointing-method", type=str, default="fixed", choices=["fixed", "async", "adaptive", "none"], help="Checkpointing method to pass to the training script")
     args = parser.parse_args()
 
     print("Initializing Spot Preemption Simulator...")
@@ -37,10 +38,10 @@ def main():
     if args.dry_run:
         return
         
-    script_to_run = os.path.join(os.path.dirname(__file__), "train_and_qat.py")
+    script_to_run = os.path.join(os.path.dirname(__file__), "train_and_qat_modified.py")
     
-    print(f"Launching {script_to_run} ...")
-    process = subprocess.Popen([sys.executable, script_to_run])
+    print(f"Launching {script_to_run} with method {args.checkpointing_method}...")
+    process = subprocess.Popen([sys.executable, script_to_run, f"--checkpointing={args.checkpointing_method}"])
     
     start_time = time.time()
     

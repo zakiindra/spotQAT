@@ -6,7 +6,7 @@ import numpy as np
 import argparse
 import pandas as pd
 
-def sample_aws_lifetime(cdf_csv_path="Emulator-unified/us-east-1a_cdf.csv"):
+def sample_aws_lifetime(cdf_csv_path="data/aws/us-east-1a_cdf.csv"):
     csv_path = os.path.join(os.path.dirname(__file__), cdf_csv_path)
     
     # Read the empirical CDF from the CSV file
@@ -27,6 +27,7 @@ def sample_aws_lifetime(cdf_csv_path="Emulator-unified/us-east-1a_cdf.csv"):
 def main():
     parser = argparse.ArgumentParser(description="AWS Preemption Simulator")
     parser.add_argument("--dry-run", action="store_true", help="Print simulated lifetime and exit")
+    parser.add_argument("--checkpointing-method", type=str, default="fixed", choices=["fixed", "async", "adaptive", "none"], help="Checkpointing method to pass to the training script")
     args = parser.parse_args()
 
     print("Initializing AWS Preemption Simulator...")
@@ -39,8 +40,8 @@ def main():
     # Running the modified training script as requested
     script_to_run = os.path.join(os.path.dirname(__file__), "train_and_qat_modified.py")
     
-    print(f"Launching {script_to_run} ...")
-    process = subprocess.Popen([sys.executable, script_to_run])
+    print(f"Launching {script_to_run} with method {args.checkpointing_method}...")
+    process = subprocess.Popen([sys.executable, script_to_run, f"--checkpointing={args.checkpointing_method}"])
     
     start_time = time.time()
     
