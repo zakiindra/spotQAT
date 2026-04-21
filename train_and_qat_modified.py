@@ -53,12 +53,12 @@ EVAL_BATCH_SIZE = 2
 GRAD_ACCUM = 8
 LR = 2e-5
 WEIGHT_DECAY = 0.01
-NUM_EPOCHS_FP = 1
-NUM_EPOCHS_QAT = 1
+NUM_EPOCHS_FP = 3
+NUM_EPOCHS_QAT = 3
 WARMUP_RATIO = 0.03
 MAX_GRAD_NORM = 1.0
 
-SAVE_EVERY_N_STEPS = 1000
+SAVE_EVERY_N_STEPS = 200
 SAVE_EVERY_N_SECONDS = -1
 
 #   1) "fixed_interval" -> save on a fixed step/time interval in the training thread
@@ -581,11 +581,13 @@ def main():
         help="The checkpointing method to use. If 'none', runs the baseline."
     )
     parser.add_argument(
-        "--sim-id",
+        "--sim_id",
         type=str,
         default="default_sim",
         help="Unique ID for the simulation to avoid checkpoint conflicts"
     )
+    parser.add_argument("--num_epochs_fp", type=int, default=3, help="Number of full precision epochs")
+    parser.add_argument("--num_epochs_qat", type=int, default=3, help="Number of QAT epochs")
     args = parser.parse_args()
 
     global CHECKPOINT_MODE
@@ -593,6 +595,10 @@ def main():
     
     global REMOTE_CHECKPOINT_FILENAME
     REMOTE_CHECKPOINT_FILENAME = f"latest_spot_checkpoint_{args.sim_id}.pt"
+
+    global NUM_EPOCHS_FP, NUM_EPOCHS_QAT
+    NUM_EPOCHS_FP = args.num_epochs_fp
+    NUM_EPOCHS_QAT = args.num_epochs_qat
     
     run_type = "baseline" if args.checkpointing == "none" else "spot"
 

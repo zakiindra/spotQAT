@@ -16,8 +16,10 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Print simulated lifetime and exit")
     parser.add_argument("--checkpointing-method", type=str, default="fixed", choices=["fixed", "async", "adaptive", "none"], help="Checkpointing method to pass to the training script")
     parser.add_argument("--max-sample-time", type=float, default=float('inf'), help="Maximum sample time in seconds")
-    parser.add_argument("--sim-id", type=str, default=uuid.uuid4().hex[:8], help="Unique simulation ID")
-    parser.add_argument("--gpu-id", type=str, default="0", help="CUDA_VISIBLE_DEVICES ID")
+    parser.add_argument("--sim_id", type=str, default=uuid.uuid4().hex[:8], help="Unique simulation ID")
+    parser.add_argument("--gpu_id", type=str, default="0", help="CUDA_VISIBLE_DEVICES ID")
+    parser.add_argument("--num_epochs_fp", type=int, default=3, help="Number of FP epochs")
+    parser.add_argument("--num_epochs_qat", type=int, default=3, help="Number of QAT epochs")
     args = parser.parse_args()
 
     print("Initializing Poisson Preemption Simulator...")
@@ -37,8 +39,14 @@ def main():
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
         
-        print(f"Launching {script_to_run} with method {args.checkpointing_method} on GPU {args.gpu_id} (sim-id {args.sim_id})...")
-        process = subprocess.Popen([sys.executable, script_to_run, f"--checkpointing={args.checkpointing_method}", f"--sim-id={args.sim_id}"], env=env)
+        print(f"Launching {script_to_run} with method {args.checkpointing_method} on GPU {args.gpu_id} (sim_id {args.sim_id})...")
+        process = subprocess.Popen([
+            sys.executable, script_to_run, 
+            f"--checkpointing={args.checkpointing_method}", 
+            f"--sim_id={args.sim_id}",
+            f"--num_epochs_fp={args.num_epochs_fp}",
+            f"--num_epochs_qat={args.num_epochs_qat}"
+        ], env=env)
         
         start_time = time.time()
         
