@@ -27,7 +27,7 @@ $PIP_EXEC install torch torchvision torchaudio --index-url https://download.pyto
 echo "Installing project dependencies..."
 $PIP_EXEC install datasets torchao transformers bitsandbytes \
     scipy pandas numpy fastapi uvicorn requests kubernetes \
-    prettytable accelerate
+    prettytable accelerate python-multipart
 
 echo "==========================================================="
 echo " Environment setup complete! "
