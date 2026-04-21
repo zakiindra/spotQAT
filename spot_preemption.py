@@ -60,7 +60,8 @@ def main():
             f"--checkpointing={args.checkpointing_method}", 
             f"--sim_id={args.sim_id}",
             f"--num_epochs_fp={args.num_epochs_fp}",
-            f"--num_epochs_qat={args.num_epochs_qat}"
+            f"--num_epochs_qat={args.num_epochs_qat}",
+            f"--max_sample_time={args.max_sample_time}"
         ], env=env)
         
         start_time = time.time()

@@ -270,7 +270,8 @@ def run_training_pipeline(model_name, run_type):
                 remote_name=REMOTE_CHECKPOINT_FILENAME,
                 data_source="aws",
                 risk_threshold=0.05,
-                window_size=600
+                window_size=600,
+                max_sample_time=MAX_SAMPLE_TIME
             )
 
     def build_checkpoint_payload(epoch_idx, step_idx, phase):
@@ -588,6 +589,7 @@ def main():
     )
     parser.add_argument("--num_epochs_fp", type=int, default=3, help="Number of full precision epochs")
     parser.add_argument("--num_epochs_qat", type=int, default=3, help="Number of QAT epochs")
+    parser.add_argument("--max_sample_time", type=float, default=float('inf'), help="Max simulation sample time")
     args = parser.parse_args()
 
     global CHECKPOINT_MODE
@@ -596,9 +598,10 @@ def main():
     global REMOTE_CHECKPOINT_FILENAME
     REMOTE_CHECKPOINT_FILENAME = f"latest_spot_checkpoint_{args.sim_id}.pt"
 
-    global NUM_EPOCHS_FP, NUM_EPOCHS_QAT
+    global NUM_EPOCHS_FP, NUM_EPOCHS_QAT, MAX_SAMPLE_TIME
     NUM_EPOCHS_FP = args.num_epochs_fp
     NUM_EPOCHS_QAT = args.num_epochs_qat
+    MAX_SAMPLE_TIME = args.max_sample_time
     
     run_type = "baseline" if args.checkpointing == "none" else "spot"
 
