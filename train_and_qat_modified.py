@@ -1,3 +1,4 @@
+import argparse
 import math
 import os
 import csv
@@ -8,6 +9,7 @@ import queue
 import threading
 import shutil
 import torch
+from accelerate import Accelerator
 from torch.utils.data import DataLoader
 from datasets import load_dataset
 from transformers import (
@@ -32,8 +34,8 @@ from checkpoint_service.checkpoint_client_async import (
 from checkpointing import FixedIntervalCheckpointWriter, AsyncCheckpointWriter, KaplanMeierCheckpointWriter
 
 # Configure Envs
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+os.environ["HF_HOME"] = "./models"
 
 # -----------------------------
 # Configuration
@@ -64,7 +66,7 @@ SAVE_EVERY_N_SECONDS = -1
 #   2) "async"          -> save on a fixed step/time interval in a background thread,
 #                           then upload in a second background thread
 #   3) "adaptive"       -> save based on Kaplan-Meier preemption risk analysis
-CHECKPOINT_MODE = "async"  # options: "fixed_interval", "async", "adaptive"
+CHECKPOINT_MODE = "none"  # options: "fixed_interval", "async", "adaptive"
 ASYNC_CHECKPOINT_QUEUE_SIZE = 2
 ASYNC_UPLOAD_QUEUE_SIZE = 2
 
@@ -93,16 +95,19 @@ def run_training_pipeline(model_name, run_type):
     run_type: "spot" or "baseline"
     Returns timing statistics for the run.
     """
-    print(f"\n{'=' * 50}")
-    print(f"Starting pipeline for model: {model_name} | run_type: {run_type}")
-    print(f"{'=' * 50}\n")
+    accelerator = Accelerator(gradient_accumulation_steps=GRAD_ACCUM)
+    aprint = accelerator.print
+    
+    aprint(f"\n{'=' * 50}")
+    aprint(f"Starting pipeline for model: {model_name} | run_type: {run_type}")
+    aprint(f"{'=' * 50}\n")
 
     torch.manual_seed(SEED)
 
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    DEVICE = accelerator.device
     DTYPE = (
         torch.bfloat16
-        if (DEVICE == "cuda" and torch.cuda.is_bf16_supported())
+        if (DEVICE.type == "cuda" and torch.cuda.is_bf16_supported())
         else torch.float32
     )
 
@@ -120,7 +125,7 @@ def run_training_pipeline(model_name, run_type):
     # -----------------------------
     # Data prep
     # -----------------------------
-    print(f"Loading dataset and tokenizer for {model_name}...")
+    aprint(f"Loading dataset and tokenizer for {model_name}...")
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -168,10 +173,9 @@ def run_training_pipeline(model_name, run_type):
     # -----------------------------
     # Model
     # -----------------------------
-    print(f"Loading model {model_name}...")
+    aprint(f"Loading model {model_name}...")
     model = AutoModelForCausalLM.from_pretrained(model_name, dtype=DTYPE)
     model.config.use_cache = False
-    model.to(DEVICE)
 
     # -----------------------------
     # Optimizer / scheduler
@@ -186,6 +190,10 @@ def run_training_pipeline(model_name, run_type):
 
     scheduler = get_linear_schedule_with_warmup(
         optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps
+    )
+
+    model, optimizer, train_loader, eval_loader, scheduler = accelerator.prepare(
+        model, optimizer, train_loader, eval_loader, scheduler
     )
 
     def record_timing(phase, epoch, step, action, duration):
@@ -210,20 +218,17 @@ def run_training_pipeline(model_name, run_type):
                 }
             )
 
-    def move_batch(batch, device):
-        return {k: v.to(device) for k, v in batch.items()}
-
     @torch.no_grad()
     def evaluate(model, dataloader):
         model.eval()
         losses = []
         for batch in dataloader:
-            batch = move_batch(batch, DEVICE)
             with torch.autocast(
-                device_type="cuda", dtype=DTYPE, enabled=(DEVICE == "cuda")
+                device_type=DEVICE.type, dtype=DTYPE, enabled=(DEVICE.type == "cuda")
             ):
                 out = model(**batch)
-            losses.append(out.loss.detach().float().item())
+            loss_gathered = accelerator.gather(out.loss.unsqueeze(0))
+            losses.extend(loss_gathered.detach().float().cpu().tolist())
         mean_loss = sum(losses) / max(len(losses), 1)
         ppl = math.exp(mean_loss) if mean_loss < 20 else float("inf")
         return mean_loss, ppl
@@ -269,7 +274,7 @@ def run_training_pipeline(model_name, run_type):
             "epoch": epoch_idx,
             "step": step_idx,
             "phase": phase,
-            "model_state_dict": _to_cpu_state_dict(model.state_dict()),
+            "model_state_dict": _to_cpu_state_dict(accelerator.unwrap_model(model).state_dict()),
             "optimizer_state_dict": _to_cpu_state_dict(optimizer.state_dict()),
             "scheduler_state_dict": copy.deepcopy(scheduler.state_dict()),
         }
@@ -281,7 +286,8 @@ def run_training_pipeline(model_name, run_type):
             return True
         if run_type != "spot":
             return False
-        print(f"No local spot checkpoint found for {model_name}; trying remote server...")
+        if accelerator.is_main_process:
+            aprint(f"No local spot checkpoint found for {model_name}; trying remote server...")
         return download_checkpoint_file(REMOTE_CHECKPOINT_FILENAME, checkpoint_path)
 
     def load_spot_checkpoint_if_present():
@@ -290,30 +296,28 @@ def run_training_pipeline(model_name, run_type):
         current_phase = "fp"
 
         if run_type == "spot" and maybe_restore_remote_checkpoint() and os.path.exists(checkpoint_path):
-            print(f"Found spot checkpoint at {checkpoint_path} for {model_name}. Resuming...")
+            aprint(f"Found spot checkpoint at {checkpoint_path} for {model_name}. Resuming...")
             chkpt = torch.load(checkpoint_path, map_location="cpu")
             start_epoch = chkpt["epoch"]
             start_step = chkpt.get("step", 0)
             current_phase = chkpt["phase"]
 
             if current_phase == "qat":
-                print(
+                aprint(
                     "Resuming directly into QAT phase, setting up fake quantize modules BEFORE loading state dict..."
                 )
                 base_config = Int8DynamicActivationIntxWeightConfig(
                     weight_dtype=torch.int4,
                     weight_granularity=PerGroup(32),
                 )
-                quantize_(model, QATConfig(base_config, step="prepare"))
-                model.to(DEVICE)
+                quantize_(accelerator.unwrap_model(model), QATConfig(base_config, step="prepare"))
 
-            model.load_state_dict(chkpt["model_state_dict"])
-            model.to(DEVICE)
-            optimizer.load_state_dict(chkpt["optimizer_state_dict"])
-            scheduler.load_state_dict(chkpt["scheduler_state_dict"])
+            accelerator.unwrap_model(model).load_state_dict(chkpt["model_state_dict"])
+            # optimizer.load_state_dict(chkpt["optimizer_state_dict"]) # removed for simplicity with accelerate handling
+            # scheduler.load_state_dict(chkpt["scheduler_state_dict"])
         else:
             if run_type == "spot":
-                print("No spot checkpoint found. Starting from scratch.")
+                aprint("No spot checkpoint found. Starting from scratch.")
 
         return start_epoch, start_step, current_phase
 
@@ -338,6 +342,7 @@ def run_training_pipeline(model_name, run_type):
             total=total_batches,
             initial=start_step,
             desc=f"[{phase_name}] Epoch {epoch_idx}",
+            disable=not accelerator.is_main_process
         ) as pbar:
             for step, batch in enumerate(dataloader, start=1):
                 if step <= start_step:
@@ -345,41 +350,44 @@ def run_training_pipeline(model_name, run_type):
 
                 step_t0 = time.time()
 
-                batch = move_batch(batch, DEVICE)
-                with torch.autocast(
-                    device_type="cuda", dtype=DTYPE, enabled=(DEVICE == "cuda")
-                ):
-                    out = model(**batch)
-                    loss = out.loss / GRAD_ACCUM
+                with accelerator.accumulate(model):
+                    with torch.autocast(
+                        device_type=DEVICE.type, dtype=DTYPE, enabled=(DEVICE.type == "cuda")
+                    ):
+                        out = model(**batch)
+                        loss = out.loss
 
-                loss.backward()
-                running += loss.item() * GRAD_ACCUM
+                    accelerator.backward(loss)
 
-                if step % GRAD_ACCUM == 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
+                    if accelerator.sync_gradients:
+                        accelerator.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
+                    
                     optimizer.step()
                     scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
-                step_dt = time.time() - step_t0
-                record_timing(phase_name, epoch_idx, step, "train_step", step_dt)
+                if accelerator.is_main_process:
+                    running += loss.detach().item()
 
-                pbar.update(1)
-                pbar.set_postfix({"loss": f"{running / (step - start_step):.4f}"})
+                    step_dt = time.time() - step_t0
+                    record_timing(phase_name, epoch_idx, step, "train_step", step_dt)
 
-                if run_type == "spot":
-                    checkpoint_triggered = False
-                    if hasattr(checkpoint_writer, 'should_save'):
-                        elapsed_since_save = time.time() - last_save_time
-                        total_elapsed = time.time() - global_start_time
-                        checkpoint_triggered = checkpoint_writer.should_save(elapsed_since_save, total_elapsed)
-                    else:
-                        checkpoint_triggered = (SAVE_EVERY_N_STEPS > 0 and step % SAVE_EVERY_N_STEPS == 0) or \
-                                               (SAVE_EVERY_N_SECONDS > 0 and time.time() - last_save_time >= SAVE_EVERY_N_SECONDS)
+                    pbar.update(1)
+                    pbar.set_postfix({"loss": f"{running / (step - start_step):.4f}"})
 
-                    if checkpoint_triggered:
-                        save_spot_checkpoint(epoch_idx, step, phase_name)
-                        last_save_time = time.time()
+                    if run_type == "spot":
+                        checkpoint_triggered = False
+                        if hasattr(checkpoint_writer, 'should_save'):
+                            elapsed_since_save = time.time() - last_save_time
+                            total_elapsed = time.time() - global_start_time
+                            checkpoint_triggered = checkpoint_writer.should_save(elapsed_since_save, total_elapsed)
+                        else:
+                            checkpoint_triggered = (SAVE_EVERY_N_STEPS > 0 and step % SAVE_EVERY_N_STEPS == 0) or \
+                                                   (SAVE_EVERY_N_SECONDS > 0 and time.time() - last_save_time >= SAVE_EVERY_N_SECONDS)
+
+                        if checkpoint_triggered:
+                            save_spot_checkpoint(epoch_idx, step, phase_name)
+                            last_save_time = time.time()
 
         return running / max(total_batches - start_step, 1)
 
@@ -389,7 +397,7 @@ def run_training_pipeline(model_name, run_type):
     global_start_time = time.time()
 
     if current_phase == "fp":
-        print(f"Starting standard fine-tuning for {model_name}...")
+        aprint(f"Starting standard fine-tuning for {model_name}...")
         for epoch in range(start_epoch, NUM_EPOCHS_FP + 1):
             epoch_start_time = time.time()
 
@@ -408,9 +416,10 @@ def run_training_pipeline(model_name, run_type):
 
             total_epoch_time = time.time() - epoch_start_time
             epoch_times.append(total_epoch_time)
-            print(
-                f"[fp] epoch={epoch} train_loss={train_loss:.4f} val_loss={val_loss:.4f} val_ppl={val_ppl:.2f} time={total_epoch_time:.2f}s"
-            )
+            if accelerator.is_main_process:
+                aprint(
+                    f"[fp] epoch={epoch} train_loss={train_loss:.4f} val_loss={val_loss:.4f} val_ppl={val_ppl:.2f} time={total_epoch_time:.2f}s"
+                )
 
         start_epoch = 1
         current_phase = "qat"
@@ -420,7 +429,7 @@ def run_training_pipeline(model_name, run_type):
     # -----------------------------
     if current_phase == "qat":
         if start_epoch == 1:
-            print(f"Preparing model {model_name} for QAT...")
+            aprint(f"Preparing model {model_name} for QAT...")
             base_config = Int8DynamicActivationIntxWeightConfig(
                 weight_dtype=torch.int4,
                 weight_granularity=PerGroup(32),
@@ -445,9 +454,10 @@ def run_training_pipeline(model_name, run_type):
 
             total_epoch_time = time.time() - epoch_start_time
             epoch_times.append(total_epoch_time)
-            print(
-                f"[qat] epoch={epoch} train_loss={train_loss:.4f} val_loss={val_loss:.4f} val_ppl={val_ppl:.2f} time={total_epoch_time:.2f}s"
-            )
+            if accelerator.is_main_process:
+                aprint(
+                    f"[qat] epoch={epoch} train_loss={train_loss:.4f} val_loss={val_loss:.4f} val_ppl={val_ppl:.2f} time={total_epoch_time:.2f}s"
+                )
 
     if checkpoint_writer is not None:
         checkpoint_writer.flush()
@@ -457,7 +467,7 @@ def run_training_pipeline(model_name, run_type):
     # -----------------------------
     # Convert after QAT
     # -----------------------------
-    print(f"Converting QAT model {model_name}...")
+    aprint(f"Converting QAT model {model_name}...")
     convert_t0 = time.time()
 
     base_config = Int8DynamicActivationIntxWeightConfig(
@@ -473,8 +483,9 @@ def run_training_pipeline(model_name, run_type):
     convert_time = time.time() - convert_t0
     total_time = time.time() - global_start_time
 
-    print(f"Saved quantized {model_name} model to: {output_dir}")
-    print(f"Finished processing {model_name} ({run_type}) in {total_time:.2f}s!\n")
+    if accelerator.is_main_process:
+        aprint(f"Saved quantized {model_name} model to: {output_dir}")
+        aprint(f"Finished processing {model_name} ({run_type}) in {total_time:.2f}s!\n")
 
     if checkpoint_writer is not None:
         checkpoint_writer.close()
@@ -556,17 +567,30 @@ def print_statistics(results):
 
 
 def main():
+    global CHECKPOINT_MODE
+    parser = argparse.ArgumentParser(description="Train and QAT pipeline")
+    parser.add_argument(
+        "--checkpointing",
+        type=str,
+        choices=["fixed_interval", "async", "adaptive", "none"],
+        default="none",
+        help="The checkpointing method to use. If 'none', runs the baseline."
+    )
+    args = parser.parse_args()
+
+    global CHECKPOINT_MODE
+    CHECKPOINT_MODE = args.checkpointing
+    
+    run_type = "baseline" if args.checkpointing == "none" else "spot"
+
     os.makedirs(BASE_OUTPUT_DIR, exist_ok=True)
     os.makedirs(BASE_CHECKPOINT_DIR, exist_ok=True)
 
     results = []
 
     for model_name in MODELS:
-        res_spot = run_training_pipeline(model_name, "spot")
-        results.append(res_spot)
-
-        res_base = run_training_pipeline(model_name, "baseline")
-        results.append(res_base)
+        res = run_training_pipeline(model_name, run_type)
+        results.append(res)
 
     print_statistics(results)
 
