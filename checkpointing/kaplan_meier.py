@@ -7,12 +7,15 @@ from .base import BaseCheckpointWriter
 from checkpoint_service.checkpoint_client_async import send_checkpoint_file
 
 class KaplanMeierCheckpointWriter(BaseCheckpointWriter):
-    def __init__(self, checkpoint_path, checkpoint_times, record_timing_fn, remote_name, data_source="gcp", risk_threshold=0.05, window_size=600):
+    def __init__(self, checkpoint_path, checkpoint_times, record_timing_fn, remote_name, data_source="gcp", risk_threshold=0.05, window_size=600, max_sample_time=float('inf')):
         super().__init__(checkpoint_path, checkpoint_times, record_timing_fn)
         self.remote_name = remote_name
         self.data_source = data_source
         self.risk_threshold = risk_threshold  # e.g., 5% risk threshold
-        self.window_size = window_size        # Assess risk for the next X seconds (e.g., 10 mins)
+        self.max_sample_time = max_sample_time
+        
+        # Scale window_size proportionately if max_sample_time is very short to adapt window evaluation
+        self.window_size = min(window_size, max_sample_time * 0.1) if max_sample_time != float('inf') else window_size
         self.start_time = time.time()
         
         self.lifetimes = self._load_data()
@@ -42,6 +45,7 @@ class KaplanMeierCheckpointWriter(BaseCheckpointWriter):
             else:
                 lifetimes = [3600, 7200, 14400, 86400]
                 
+        lifetimes = [t for t in lifetimes if t <= self.max_sample_time]
         lifetimes = np.sort(lifetimes)
         return lifetimes
 
@@ -81,7 +85,7 @@ class KaplanMeierCheckpointWriter(BaseCheckpointWriter):
         survival_prob = self.get_conditional_survival(total_elapsed_time, self.window_size)
         failure_prob = 1.0 - survival_prob
         
-        min_interval = 300 # minimum interval of 5 mins between checkpoints
+        min_interval = min(300, self.max_sample_time * 0.05) if self.max_sample_time != float('inf') else 300
         
         if failure_prob > self.risk_threshold and elapsed_time_since_last_save > min_interval:
             return True
