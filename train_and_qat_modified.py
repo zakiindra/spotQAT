@@ -580,10 +580,19 @@ def main():
         default="none",
         help="The checkpointing method to use. If 'none', runs the baseline."
     )
+    parser.add_argument(
+        "--sim-id",
+        type=str,
+        default="default_sim",
+        help="Unique ID for the simulation to avoid checkpoint conflicts"
+    )
     args = parser.parse_args()
 
     global CHECKPOINT_MODE
     CHECKPOINT_MODE = args.checkpointing
+    
+    global REMOTE_CHECKPOINT_FILENAME
+    REMOTE_CHECKPOINT_FILENAME = f"latest_spot_checkpoint_{args.sim_id}.pt"
     
     run_type = "baseline" if args.checkpointing == "none" else "spot"
 
