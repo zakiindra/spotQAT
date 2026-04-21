@@ -28,48 +28,54 @@ def main():
     parser = argparse.ArgumentParser(description="AWS Preemption Simulator")
     parser.add_argument("--dry-run", action="store_true", help="Print simulated lifetime and exit")
     parser.add_argument("--checkpointing-method", type=str, default="fixed", choices=["fixed", "async", "adaptive", "none"], help="Checkpointing method to pass to the training script")
+    parser.add_argument("--max-sample-time", type=float, default=float('inf'), help="Maximum sample time in seconds")
     args = parser.parse_args()
 
     print("Initializing AWS Preemption Simulator...")
-    lifetime = sample_aws_lifetime()
-    print(f"Simulated AWS spot lifetime: {lifetime:.2f} seconds ({lifetime/3600:.2f} hours)")
-    
-    if args.dry_run:
-        return
-        
-    # Running the modified training script as requested
     script_to_run = os.path.join(os.path.dirname(__file__), "train_and_qat_modified.py")
-    
-    print(f"Launching {script_to_run} with method {args.checkpointing_method}...")
-    process = subprocess.Popen([sys.executable, script_to_run, f"--checkpointing={args.checkpointing_method}"])
-    
-    start_time = time.time()
-    
-    try:
-        while True:
-            ret_code = process.poll()
-            if ret_code is not None:
-                print(f"\nProcess finished gracefully with exit code {ret_code}.")
-                break
-                
-            elapsed = time.time() - start_time
-            if elapsed >= lifetime:
-                print(f"\n[!] Preemption triggered at {elapsed:.2f}s! Revoking capacity.")
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                print("Process hard-killed to simulate Spot Instance interruption.")
-                process.wait()
-                break
-                
-            time.sleep(1)
+
+    while True:
+        lifetime = sample_aws_lifetime()
+        while lifetime > args.max_sample_time:
+            lifetime = sample_aws_lifetime()
             
-    except KeyboardInterrupt:
-        print("\nOrchestrator interrupted. Killing child training process.")
-        process.terminate()
-        process.wait()
+        print(f"Simulated AWS spot lifetime: {lifetime:.2f} seconds ({lifetime/3600:.2f} hours)")
+        
+        if args.dry_run:
+            if lifetime <= args.max_sample_time:
+                break
+                
+        print(f"Launching {script_to_run} with method {args.checkpointing_method}...")
+        process = subprocess.Popen([sys.executable, script_to_run, f"--checkpointing={args.checkpointing_method}"])
+        
+        start_time = time.time()
+        
+        try:
+            while True:
+                ret_code = process.poll()
+                if ret_code is not None:
+                    print(f"\nProcess finished gracefully with exit code {ret_code}.")
+                    return
+                    
+                elapsed = time.time() - start_time
+                if elapsed >= lifetime:
+                    print(f"\n[!] Preemption triggered at {elapsed:.2f}s! Revoking capacity.")
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                    print("Process hard-killed to simulate Spot Instance interruption. Restarting on new instance...")
+                    process.wait()
+                    break
+                    
+                time.sleep(1)
+                
+        except KeyboardInterrupt:
+            print("\nOrchestrator interrupted. Killing child training process.")
+            process.terminate()
+            process.wait()
+            return
 
 if __name__ == "__main__":
     main()
