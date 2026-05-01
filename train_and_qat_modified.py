@@ -200,27 +200,36 @@ def run_training_pipeline(model_name, run_type):
         model, optimizer, train_loader, eval_loader, scheduler
     )
 
-    def record_timing(phase, epoch, step, action, duration):
+    def record_timing(phase, epoch, step, action, duration, risk_score=0.0):
+        """
+        Logs events with microsecond precision timestamps.
+        """
         csv_path = os.path.join(BASE_OUTPUT_DIR, "timing_log.csv")
         file_exists = os.path.isfile(csv_path)
+        
+        # Capture absolute timestamp at the moment of logging
+        current_ts = time.time() 
+
         with open(csv_path, mode="a", newline="") as f:
+            # Added 'timestamp' and 'risk_score' to fieldnames 
             writer = csv.DictWriter(
                 f,
-                fieldnames=["model_name", "run_type", "phase", "epoch", "step", "action", "duration"],
+                fieldnames=["timestamp", "model_name", "run_type", "phase", "epoch", "step", "action", "duration", "risk_score"],
             )
             if not file_exists:
                 writer.writeheader()
-            writer.writerow(
-                {
-                    "model_name": model_name,
-                    "run_type": run_type,
-                    "phase": phase,
-                    "epoch": epoch,
-                    "step": step,
-                    "action": action,
-                    "duration": duration,
-                }
-            )
+            
+            writer.writerow({
+                "timestamp": f"{current_ts:.6f}",
+                "model_name": model_name,
+                "run_type": run_type,
+                "phase": phase,
+                "epoch": epoch,
+                "step": step,
+                "action": action,
+                "duration": duration,
+                "risk_score": f"{risk_score:.4f}"
+            })
 
     @torch.no_grad()
     def evaluate(model, dataloader):
@@ -382,16 +391,30 @@ def run_training_pipeline(model_name, run_type):
 
                     if run_type == "spot":
                         checkpoint_triggered = False
+                        current_risk = 0.0  # Initialize with a default value
+
                         if hasattr(checkpoint_writer, 'should_save'):
                             elapsed_since_save = time.time() - last_save_time
                             total_elapsed = time.time() - global_start_time
-                            checkpoint_triggered = checkpoint_writer.should_save(elapsed_since_save, total_elapsed)
+                            
+                            # Capture the tuple (bool, float) from the KM writer
+                            res = checkpoint_writer.should_save(elapsed_since_save, total_elapsed) [cite: 130]
+                            
+                            if isinstance(res, tuple):
+                                checkpoint_triggered, current_risk = res
+                            else:
+                                checkpoint_triggered = res # Fallback for non-adaptive writers
                         else:
-                            checkpoint_triggered = (SAVE_EVERY_N_STEPS > 0 and step % SAVE_EVERY_N_STEPS == 0) or \
-                                                   (SAVE_EVERY_N_SECONDS > 0 and time.time() - last_save_time >= SAVE_EVERY_N_SECONDS)
+                            # Default fixed interval check [cite: 131]
+                            checkpoint_triggered = (SAVE_EVERY_N_STEPS > 0 and step % SAVE_EVERY_N_STEPS == 0)
 
                         if checkpoint_triggered:
+                            # Now current_risk is properly initialized and populated
+                            record_timing(phase_name, epoch_idx, step, "checkpoint_start", 0.0, risk_score=current_risk) 
+                            
                             save_spot_checkpoint(epoch_idx, step, phase_name)
+                            
+                            record_timing(phase_name, epoch_idx, step, "checkpoint_end", 0.0) 
                             last_save_time = time.time()
 
         return running / max(total_batches - start_step, 1)
