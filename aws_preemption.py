@@ -68,10 +68,10 @@ def main():
             f"--num_epochs_fp={args.num_epochs_fp}",
             f"--num_epochs_qat={args.num_epochs_qat}",
             f"--max_sample_time={args.max_sample_time}",
-            f"--risk-threshold={args.risk_threshold}",
-            f"--window-size={args.window_size}",
-            f"--scale-factor={args.scale_factor}",
-            f"--min-interval={args.min_interval}",
+            f"--risk_threshold={args.risk_threshold}",
+            f"--window_size={args.window_size}",
+            f"--scale_factor={args.scale_factor}",
+            f"--min_interval={args.min_interval}",
             f"--delta={args.delta}",
             f"--mttf={args.mttf}"
         ], env=env)
