@@ -1,4 +1,5 @@
 import os
+import time
 import shutil
 import queue
 import threading
@@ -114,10 +115,15 @@ def download_checkpoint_file(
     return True
 
 
-def stage_file_copy(file_path: str, staging_dir: str, staged_name: str | None = None) -> str:
-    """Creates a stable copy for background upload so the source file can be overwritten later."""
+def stage_file_copy(file_path: str, staging_dir: str, staged_name: str | None = None) -> tuple[str, float]:
+    """Creates a copy and returns (staged_path, write_duration)."""
     os.makedirs(staging_dir, exist_ok=True)
     target_name = staged_name or os.path.basename(file_path)
     staged_path = os.path.join(staging_dir, target_name)
-    shutil.copy2(file_path, staged_path)
-    return staged_path
+    
+    t0 = time.time()
+    shutil.copy2(file_path, staged_path) # The actual disk write 
+    write_duration = time.time() - t0
+    
+    print(f"[CLIENT] Staged {target_name} in {write_duration:.4f}s")
+    return staged_path, write_duration
