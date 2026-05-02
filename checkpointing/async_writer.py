@@ -45,11 +45,23 @@ class AsyncCheckpointWriter(BaseCheckpointWriter):
 
             if self.upload_client is not None:
                 stage_name = f"upload_{phase}_epoch{epoch_idx}_step{step_idx}.pt"
-                staged_path = stage_file_copy(
+                
+                # Capture both path and duration from updated utility
+                staged_path, local_copy_dt = stage_file_copy(
                     self.checkpoint_path,
                     self.upload_staging_dir,
                     staged_name=stage_name,
                 )
+                
+                # Log the local staging write time to your central log
+                self.record_timing_fn(
+                    phase, 
+                    epoch_idx, 
+                    step_idx, 
+                    "checkpoint_local_staging_write", 
+                    local_copy_dt
+                )
+                
                 self.upload_client.enqueue_file(
                     file_path=staged_path,
                     remote_name=self.remote_name,

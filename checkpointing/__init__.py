@@ -7,5 +7,6 @@ __all__ = [
     "BaseCheckpointWriter",
     "FixedIntervalCheckpointWriter",
     "AsyncCheckpointWriter",
-    "KaplanMeierCheckpointWriter"
+    "KaplanMeierCheckpointWriter",
+    "YoungDalyCheckpointWriter"
 ]

@@ -408,14 +408,14 @@ def run_training_pipeline(model_name, run_type, args):
                             total_elapsed = time.time() - global_start_time
                             
                             # Capture the tuple (bool, float) from the KM writer
-                            res = checkpoint_writer.should_save(elapsed_since_save, total_elapsed) [cite: 130]
+                            res = checkpoint_writer.should_save(elapsed_since_save, total_elapsed)
                             
                             if isinstance(res, tuple):
                                 checkpoint_triggered, current_risk = res
                             else:
                                 checkpoint_triggered = res # Fallback for non-adaptive writers
                         else:
-                            # Default fixed interval check [cite: 131]
+                            # Default fixed interval check
                             checkpoint_triggered = (SAVE_EVERY_N_STEPS > 0 and step % SAVE_EVERY_N_STEPS == 0)
 
                         if checkpoint_triggered:

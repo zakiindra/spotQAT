@@ -11,6 +11,7 @@ Run with:
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
 import os
+import time
 import shutil
 import uvicorn
 
@@ -22,12 +23,22 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 
 @app.post("/upload_checkpoint")
 async def upload_checkpoint(file: UploadFile = File(...)):
-    """Receives a checkpoint zip from the spot instance and saves it."""
+    """Receives a checkpoint and logs the disk write time."""
     save_path = os.path.join(SAVE_DIR, file.filename)
+    
+    t0 = time.time() # Start timing disk I/O
     with open(save_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-    print(f"[SERVER] Received and saved: {file.filename}")
-    return {"message": "Checkpoint saved successfully", "filename": file.filename}
+        shutil.copyfileobj(file.file, f) # 
+    write_duration = time.time() - t0 # End timing
+    
+    print(f"[SERVER] Received and saved: {file.filename} | Write Time: {write_duration:.4f}s")
+    
+    # Return the duration to the client for its logs
+    return {
+        "message": "Checkpoint saved successfully", 
+        "filename": file.filename,
+        "server_write_time": write_duration
+    }
 
 
 @app.get("/download_checkpoint/{filename}")
