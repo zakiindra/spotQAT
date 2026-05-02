@@ -82,11 +82,11 @@ class KaplanMeierCheckpointWriter(BaseCheckpointWriter):
         return s_future / s_current
         
     def should_save(self, elapsed_time_since_last_save, total_elapsed_time):
-        # Calculate failure probability based on the paper's model [cite: 223, 477]
-        survival_prob = self.get_conditional_survival(total_elapsed_time, self.window_size) [cite: 182]
+        # Calculate failure probability based on the paper's model
+        survival_prob = self.get_conditional_survival(total_elapsed_time, self.window_size)
         failure_prob = 1.0 - survival_prob # This is your risk score
         
-        # Standard logic to determine if we trigger a save [cite: 184]
+        # Standard logic to determine if we trigger a save
         min_interval = min(300, self.max_sample_time * 0.05) if self.max_sample_time != float('inf') else 300
         
         triggered = False
