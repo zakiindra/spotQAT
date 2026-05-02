@@ -90,7 +90,7 @@ def _to_cpu_state_dict(state_dict):
     return cpu_state
 
 
-def run_training_pipeline(model_name, run_type):
+def run_training_pipeline(model_name, run_type, args):
     """
     run_type: "spot" or "baseline"
     Returns timing statistics for the run.
@@ -277,10 +277,20 @@ def run_training_pipeline(model_name, run_type):
                 checkpoint_times=checkpoint_times,
                 record_timing_fn=record_timing,
                 remote_name=REMOTE_CHECKPOINT_FILENAME,
-                data_source="aws",
+                data_source=args.data_source, 
                 risk_threshold=0.05,
                 window_size=600,
                 max_sample_time=MAX_SAMPLE_TIME
+            )
+        elif CHECKPOINT_MODE == "young_daly":
+            from checkpointing import YoungDalyCheckpointWriter
+            checkpoint_writer = YoungDalyCheckpointWriter(
+                checkpoint_path=checkpoint_path,
+                checkpoint_times=checkpoint_times,
+                record_timing_fn=record_timing,
+                remote_name=REMOTE_CHECKPOINT_FILENAME,
+                delta=args.delta,
+                mttf=args.mttf
             )
 
     def build_checkpoint_payload(epoch_idx, step_idx, phase):
@@ -600,10 +610,11 @@ def main():
     parser.add_argument(
         "--checkpointing",
         type=str,
-        choices=["fixed", "async", "adaptive", "none"],
-        default="none",
-        help="The checkpointing method to use. If 'none', runs the baseline."
+        choices=["fixed", "async", "adaptive", "young_daly", "none"], # Add young_daly
+        default="none"
     )
+    parser.add_argument("--mttf", type=float, default=3600.0, help="Mean Time To Failure in seconds")
+    parser.add_argument("--delta", type=float, default=10.0, help="Checkpoint write overhead in seconds")
     parser.add_argument(
         "--sim_id",
         type=str,
@@ -613,6 +624,13 @@ def main():
     parser.add_argument("--num_epochs_fp", type=int, default=3, help="Number of full precision epochs")
     parser.add_argument("--num_epochs_qat", type=int, default=3, help="Number of QAT epochs")
     parser.add_argument("--max_sample_time", type=float, default=float('inf'), help="Max simulation sample time")
+    parser.add_argument(
+        "--data_source",
+        type=str,
+        default="aws",
+        choices=["aws", "gcp"],
+        help="The trace data source for Kaplan-Meier analysis (aws or gcp)"
+    )
     args = parser.parse_args()
 
     global CHECKPOINT_MODE
