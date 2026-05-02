@@ -14,7 +14,7 @@ class YoungDalyCheckpointWriter(BaseCheckpointWriter):
         checkpoint_times, 
         record_timing_fn, 
         remote_name,
-        delta=10.0,    # Default checkpoint write overhead in seconds
+        delta=60.0,    # Default checkpoint write overhead in seconds
         mttf=3600.0    # Default Mean Time To Failure (1 hour) 
     ):
         super().__init__(checkpoint_path, checkpoint_times, record_timing_fn)
@@ -25,6 +25,10 @@ class YoungDalyCheckpointWriter(BaseCheckpointWriter):
         # Calculate the optimal interval (tau) immediately
         # Reference: 
         self.tau = math.sqrt(2 * self.delta * self.mttf)
+        print("Young-Daly Checkpoint Parameters:")
+        print(f"- Delta: {self.delta}")
+        print(f"- MTTF: {self.mttf}")
+        print(f"- Tau: {self.tau}")
         
         print(f"[Young-Daly] Initialized with delta={self.delta}s, MTTF={self.mttf}s")
         print(f"[Young-Daly] Calculated optimal checkpoint interval (tau): {self.tau:.2f} seconds")

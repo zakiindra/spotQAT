@@ -7,20 +7,37 @@ from .base import BaseCheckpointWriter
 from checkpoint_service.checkpoint_client_async import send_checkpoint_file
 
 class KaplanMeierCheckpointWriter(BaseCheckpointWriter):
-    def __init__(self, checkpoint_path, checkpoint_times, record_timing_fn, remote_name, data_source="gcp", risk_threshold=0.05, window_size=600, max_sample_time=float('inf'), scale_factor=24.0):
+    def __init__(
+        self,
+        checkpoint_path,
+        checkpoint_times,
+        record_timing_fn,
+        remote_name,
+        data_source="gcp",
+        risk_threshold=0.05,
+        window_size=600, 
+        max_sample_time=float('inf'), 
+        scale_factor=1.0, 
+        min_interval=300
+    ):
         super().__init__(checkpoint_path, checkpoint_times, record_timing_fn)
         self.remote_name = remote_name
         self.data_source = data_source
         self.risk_threshold = risk_threshold  # e.g., 5% risk threshold
         self.max_sample_time = max_sample_time
         self.scale_factor = scale_factor
-        
+        self.min_interval = min_interval
         # Scale window_size proportionately if max_sample_time is very short to adapt window evaluation
         self.window_size = min(window_size, max_sample_time * 0.1) if max_sample_time != float('inf') else window_size
         self.start_time = time.time()
         
         self.lifetimes = self._load_data()
         self.km_survival = self._compute_kaplan_meier()
+        print("Kaplan Meier Sync Checkpoint Parameters:")
+        print(f"- Risk threshold: {self.risk_threshold}")
+        print(f"- Window size: {self.window_size}")
+        print(f"- Min interval: {self.min_interval}")
+        print(f"- Scale factor: {self.scale_factor}")
 
     def _load_data(self):
         lifetimes = []
@@ -87,10 +104,9 @@ class KaplanMeierCheckpointWriter(BaseCheckpointWriter):
         failure_prob = 1.0 - survival_prob # This is your risk score
         
         # Standard logic to determine if we trigger a save
-        min_interval = min(300, self.max_sample_time * 0.05) if self.max_sample_time != float('inf') else 300
         
         triggered = False
-        if failure_prob > self.risk_threshold and elapsed_time_since_last_save > min_interval:
+        if failure_prob > self.risk_threshold and elapsed_time_since_last_save > self.min_interval:
             triggered = True
         elif elapsed_time_since_last_save > 3600: 
             triggered = True
