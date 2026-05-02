@@ -7,12 +7,13 @@ from .base import BaseCheckpointWriter
 from checkpoint_service.checkpoint_client_async import send_checkpoint_file
 
 class KaplanMeierCheckpointWriter(BaseCheckpointWriter):
-    def __init__(self, checkpoint_path, checkpoint_times, record_timing_fn, remote_name, data_source="gcp", risk_threshold=0.05, window_size=600, max_sample_time=float('inf')):
+    def __init__(self, checkpoint_path, checkpoint_times, record_timing_fn, remote_name, data_source="gcp", risk_threshold=0.05, window_size=600, max_sample_time=float('inf'), scale_factor=24.0):
         super().__init__(checkpoint_path, checkpoint_times, record_timing_fn)
         self.remote_name = remote_name
         self.data_source = data_source
         self.risk_threshold = risk_threshold  # e.g., 5% risk threshold
         self.max_sample_time = max_sample_time
+        self.scale_factor = scale_factor
         
         # Scale window_size proportionately if max_sample_time is very short to adapt window evaluation
         self.window_size = min(window_size, max_sample_time * 0.1) if max_sample_time != float('inf') else window_size
@@ -44,6 +45,8 @@ class KaplanMeierCheckpointWriter(BaseCheckpointWriter):
                     lifetimes = df['Duration'].tolist()
             else:
                 lifetimes = [3600, 7200, 14400, 86400]
+
+        lifetimes = [t / self.scale_factor for t in lifetimes]
                 
         lifetimes = [t for t in lifetimes if t <= self.max_sample_time]
         lifetimes = np.sort(lifetimes)
@@ -79,21 +82,21 @@ class KaplanMeierCheckpointWriter(BaseCheckpointWriter):
         return s_future / s_current
         
     def should_save(self, elapsed_time_since_last_save, total_elapsed_time):
-        """
-        Calculates whether a checkpoint should be written now based on KM risk analysis.
-        """
-        survival_prob = self.get_conditional_survival(total_elapsed_time, self.window_size)
-        failure_prob = 1.0 - survival_prob
+        # Calculate failure probability based on the paper's model [cite: 223, 477]
+        survival_prob = self.get_conditional_survival(total_elapsed_time, self.window_size) [cite: 182]
+        failure_prob = 1.0 - survival_prob # This is your risk score
         
+        # Standard logic to determine if we trigger a save [cite: 184]
         min_interval = min(300, self.max_sample_time * 0.05) if self.max_sample_time != float('inf') else 300
         
+        triggered = False
         if failure_prob > self.risk_threshold and elapsed_time_since_last_save > min_interval:
-            return True
+            triggered = True
+        elif elapsed_time_since_last_save > 3600: 
+            triggered = True
             
-        if elapsed_time_since_last_save > 3600: # backup interval of 1h
-            return True
-            
-        return False
+        # Return both the trigger status and the current risk score
+        return triggered, failure_prob
 
     def save_checkpoint(self, payload, epoch_idx, step_idx, phase):
         t0 = time.time()

@@ -1,4 +1,5 @@
 import json
+import csv
 import os
 import sys
 import time
@@ -116,6 +117,15 @@ def main():
                     
                 elapsed = time.time() - start_time
                 if elapsed >= lifetime:
+                    # Construct the path to the same timing log used by the trainer
+                    log_path = os.path.join(f"./qat_experiment_out/{args.sim_id}", "timing_log.csv")
+                    
+                    with open(log_path, mode="a", newline="") as f:
+                        writer = csv.writer(f)
+                        # Manually append the eviction event with timestamp 
+                        # Format: timestamp, model, run_type, phase, epoch, step, action, duration, risk
+                        writer.writerow([time.time(), "N/A", "spot", "N/A", "N/A", "N/A", "eviction_triggered", 0.0, 1.0])
+
                     print(f"\n[!] Preemption triggered at {elapsed:.2f}s! Revoking capacity.")
                     process.terminate()
                     try:
