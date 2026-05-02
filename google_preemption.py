@@ -71,12 +71,18 @@ def fit_and_sample_lifetime(data_path="data/gcp/data.json"):
 def main():
     parser = argparse.ArgumentParser(description="Google Preemption Simulator")
     parser.add_argument("--dry-run", action="store_true", help="Print simulated lifetime and exit")
-    parser.add_argument("--checkpointing-method", type=str, default="fixed", choices=["fixed", "async", "adaptive", "none"], help="Checkpointing method to pass to the training script")
+    parser.add_argument("--checkpointing-method", type=str, default="fixed", choices=["fixed", "async", "adaptive", "young_daly", "adaptive_async", "young_daly_async", "none"], help="Checkpointing method to pass to the training script")
     parser.add_argument("--max-sample-time", type=float, default=float('inf'), help="Maximum sample time in seconds")
     parser.add_argument("--sim_id", type=str, default=uuid.uuid4().hex[:8], help="Unique simulation ID")
     parser.add_argument("--gpu_id", type=str, default="0", help="CUDA_VISIBLE_DEVICES ID")
     parser.add_argument("--num_epochs_fp", type=int, default=3, help="Number of FP epochs")
     parser.add_argument("--num_epochs_qat", type=int, default=3, help="Number of QAT epochs")
+    parser.add_argument("--risk-threshold", type=float, default=0.05, help="Risk threshold for adaptive checkpointing")
+    parser.add_argument("--window-size", type=int, default=600, help="Window size for adaptive checkpointing")
+    parser.add_argument("--scale-factor", type=float, default=1.0, help="Scale factor for time compression")
+    parser.add_argument("--min-interval", type=float, default=300, help="Minimum interval between checkpoints")
+    parser.add_argument("--delta", type=float, default=60.0, help="Checkpoint write overhead in seconds")
+    parser.add_argument("--mttf", type=float, default=3600.0, help="Mean time to failure in seconds")
     args = parser.parse_args()
 
     print("Initializing Google Preemption Simulator...")
@@ -103,7 +109,13 @@ def main():
             f"--sim_id={args.sim_id}",
             f"--num_epochs_fp={args.num_epochs_fp}",
             f"--num_epochs_qat={args.num_epochs_qat}",
-            f"--max_sample_time={args.max_sample_time}"
+            f"--max_sample_time={args.max_sample_time}",
+            f"--risk-threshold={args.risk_threshold}",
+            f"--window-size={args.window_size}",
+            f"--scale-factor={args.scale_factor}",
+            f"--min-interval={args.min_interval}",
+            f"--delta={args.delta}",
+            f"--mttf={args.mttf}"
         ], env=env)
         
         start_time = time.time()

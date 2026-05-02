@@ -2,6 +2,7 @@ import argparse
 import math
 import os
 import csv
+import json
 import time
 import statistics
 import copy
@@ -278,9 +279,27 @@ def run_training_pipeline(model_name, run_type, args):
                 record_timing_fn=record_timing,
                 remote_name=REMOTE_CHECKPOINT_FILENAME,
                 data_source=args.data_source, 
-                risk_threshold=0.05,
-                window_size=600,
+                risk_threshold=args.risk_threshold,
+                scale_factor=args.scale_factor,
+                min_interval=args.min_interval,
+                window_size=args.window_size,
                 max_sample_time=MAX_SAMPLE_TIME
+            )
+        elif CHECKPOINT_MODE == "adaptive_async":
+            checkpoint_writer = KaplanMeierAsyncCheckpointWriter(
+                checkpoint_path=checkpoint_path,
+                checkpoint_times=checkpoint_times,
+                record_timing_fn=record_timing,
+                remote_name=REMOTE_CHECKPOINT_FILENAME,
+                data_source=args.data_source, 
+                risk_threshold=args.risk_threshold,
+                scale_factor=args.scale_factor,
+                min_interval=args.min_interval,
+                window_size=args.window_size,
+                max_sample_time=MAX_SAMPLE_TIME,
+                upload_staging_dir=upload_staging_dir,
+                upload_client=upload_client,
+                queue_size=ASYNC_CHECKPOINT_QUEUE_SIZE
             )
         elif CHECKPOINT_MODE == "young_daly":
             from checkpointing import YoungDalyCheckpointWriter
@@ -291,6 +310,18 @@ def run_training_pipeline(model_name, run_type, args):
                 remote_name=REMOTE_CHECKPOINT_FILENAME,
                 delta=args.delta,
                 mttf=args.mttf
+            )
+        elif CHECKPOINT_MODE == "young_daly_async":
+            checkpoint_writer = YoungDalyAsyncCheckpointWriter(
+                checkpoint_path=checkpoint_path,
+                checkpoint_times=checkpoint_times,
+                record_timing_fn=record_timing,
+                remote_name=REMOTE_CHECKPOINT_FILENAME,
+                delta=args.delta,
+                mttf=args.mttf,
+                upload_staging_dir=upload_staging_dir,
+                upload_client=upload_client,
+                queue_size=ASYNC_CHECKPOINT_QUEUE_SIZE
             )
 
     def build_checkpoint_payload(epoch_idx, step_idx, phase):
@@ -610,11 +641,15 @@ def main():
     parser.add_argument(
         "--checkpointing",
         type=str,
-        choices=["fixed", "async", "adaptive", "young_daly", "none"], # Add young_daly
+        choices=["fixed", "async", "adaptive", "adaptive_async", "young_daly", "young_daly_async", "none"], # Add young_daly
         default="none"
     )
     parser.add_argument("--mttf", type=float, default=3600.0, help="Mean Time To Failure in seconds")
-    parser.add_argument("--delta", type=float, default=10.0, help="Checkpoint write overhead in seconds")
+    parser.add_argument("--delta", type=float, default=60.0, help="Checkpoint write overhead in seconds")
+    parser.add_argument("--risk_threshold", type=float, default=0.05, help="Risk threshold for adaptive checkpointing")
+    parser.add_argument("--window_size", type=int, default=600, help="Window size for adaptive checkpointing")
+    parser.add_argument("--min_interval", type=int, default=300, help="Minimum interval between checkpoints")
+    parser.add_argument("--scale_factor", type=float, default=1.0, help="Scale factor for time compression")
     parser.add_argument(
         "--sim_id",
         type=str,
@@ -652,6 +687,9 @@ def main():
 
     os.makedirs(BASE_OUTPUT_DIR, exist_ok=True)
     os.makedirs(BASE_CHECKPOINT_DIR, exist_ok=True)
+    args_file = os.path.join(BASE_OUTPUT_DIR, "args.json")
+    with open(args_file, "w") as f:
+        json.dump(vars(args), f, indent=4)
 
     results = []
 
